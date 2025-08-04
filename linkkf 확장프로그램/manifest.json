@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Linkkf 통합 편의기능",
+  "version": "3.0.0",
+  "description": "모든 영상에서 작동하는 시청 기록, 재생목록, 이어보기, 단축키 및 데이터 백업/복원, 고급 UI 제어 기능을 제공합니다.",
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": ["controls.js"],
+      "all_frames": true,
+      "run_at": "document_start"
+    }
+  ]
+}
