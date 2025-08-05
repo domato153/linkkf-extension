@@ -1,102 +1,104 @@
-// --- START OF FILE controls.js (v3.0.1 - 재생 중 백업 시 실시간 위치 저장 기능 수정) ---
+// --- START OF FILE controls.js (v4.1.0 - 자동 마이그레이션 포함, 완전 무결 최종본) ---
+// 변경사항: 구버전(v3.x)에서 사용하던 분산된 재생 위치 기록을 새로운 중앙 저장소로
+//          자동으로 가져오는 '일회성 데이터 마이그레이션' 기능 추가.
+//          이를 통해 코드 업데이트 후에도 기존의 모든 시청 기록이 유지됩니다.
 
 if (typeof window.linkkfExtensionInitialized === 'undefined') {
     window.linkkfExtensionInitialized = true;
 
     // ===================================================================================
-    //  1. 비디오 프레임 기능 (통신 허브 역할 추가)
+    //  1. 비디오 프레임 기능 (보고자 역할 + 마이그레이션 데이터 제공자)
     // ===================================================================================
     function runVideoFrameFeatures() {
-        console.log(`[FRAME] 스크립트 실행됨. 현재 origin: ${window.location.origin}`);
+        console.log(`[FRAME] 스크립트 실행됨 (중앙화 모드). 현재 origin: ${window.location.origin}`);
 
-        const SAVE_SLOT_COUNT = 3;
-        let currentSlotIndex = 0;
-        let videoId_base = null;
+        let currentVideoId = null;
         let progressSaveInterval = null;
         let isFeatureSetupDone = false;
         const urlParams = new URLSearchParams(window.location.search);
 
-        // saveProgress 함수를 외부에서 접근할 수 있도록 전역 스코프에 가까운 곳에 정의합니다.
-        // setupVideoFeatures가 실행되어야 실제 동작하는 함수가 할당됩니다.
-        let saveProgress = () => {}; 
-
         window.addEventListener('message', (event) => {
-            if (event.source !== window.top && event.source !== window.parent) return;
-            const messageType = event.data?.type;
-            if (!messageType) return;
-    
-            let hasProgressData = false;
-            try {
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    if (key && key.startsWith('linkkf-progress-')) {
-                        hasProgressData = true;
-                        break;
-                    }
-                }
-            } catch (e) {}
+            if (event.source !== window.top || !event.data?.type) return;
 
-            if (hasProgressData) {
-                console.log(`[FRAME][${window.location.origin}] >> 최종 타겟 << 메시지("${messageType}") 수신!`);
-    
-                const sendProgressDataToTop = () => {
-                    let progressData = [];
+            const { type, payload } = event.data;
+
+            switch (type) {
+                case 'LINKKF_REQUEST_MIGRATION_DATA': {
+                    let oldProgressData = [];
                     try {
                         for (let i = 0; i < localStorage.length; i++) {
                             const key = localStorage.key(i);
                             if (key && key.startsWith('linkkf-progress-')) {
-                                progressData.push({ key, value: localStorage.getItem(key) });
+                                oldProgressData.push({ key, value: localStorage.getItem(key) });
                             }
                         }
                     } catch (e) {}
-                    window.top.postMessage({ type: 'LINKKF_RESPONSE_PROGRESS_DATA', payload: progressData }, 'https://linkkf.net');
-                };
 
-                switch (messageType) {
-                    case 'LINKKF_SAVE_AND_REQUEST_PROGRESS_DATA': {
-                        console.log('[FRAME] 즉시 저장 후 데이터 전송 요청 수신.');
-                        if (typeof saveProgress === 'function') {
-                            saveProgress(); // ★★★ 핵심 수정: 현재 재생 위치를 즉시 저장합니다.
-                        }
-                        sendProgressDataToTop(); // 저장 후 데이터를 보냅니다.
-                        break;
+                    if (oldProgressData.length > 0) {
+                        console.log(`[FRAME] 구버전 데이터 ${oldProgressData.length}개 발견. 최상위 창으로 전송합니다.`);
+                        window.top.postMessage({ type: 'LINKKF_RESPONSE_MIGRATION_DATA', payload: oldProgressData }, 'https://linkkf.net');
                     }
-                    case 'LINKKF_REQUEST_PROGRESS_DATA': {
-                        // 기존 요청 방식도 호환성을 위해 유지합니다.
-                        sendProgressDataToTop();
-                        break;
-                    }
-                    case 'LINKKF_RESTORE_PROGRESS_DATA': {
-                        const dataToRestore = event.data.payload;
-                        if (Array.isArray(dataToRestore)) {
-                            dataToRestore.forEach(item => {
-                                try {
-                                    const currentDataRaw = localStorage.getItem(item.key);
-                                    const newData = JSON.parse(item.value);
-                                    
-                                    if (currentDataRaw) {
-                                        const currentData = JSON.parse(currentDataRaw);
-                                        if (newData.time > currentData.time) {
-                                            localStorage.setItem(item.key, item.value);
-                                        }
-                                    } else {
-                                        localStorage.setItem(item.key, item.value);
-                                    }
-                                } catch(e) {}
-                            });
-                            window.top.postMessage({ type: 'LINKKF_RESTORE_ACK' }, 'https://linkkf.net');
-                        }
-                        break;
-                    }
+                    break;
                 }
-            }
-            else {
-                console.log(`[FRAME][${window.location.origin}] >> 릴레이 << 메시지("${messageType}") 수신! 자식 프레임에 전달합니다.`);
-                for (let i = 0; i < window.frames.length; i++) {
-                    window.frames[i].postMessage(event.data, '*');
+                case 'LINKKF_RESPONSE_TIME': {
+                    if (payload && typeof payload.time === 'number' && isFinite(payload.time)) {
+                        const timeToRestore = payload.time;
+                        const videoElement = document.querySelector('video.vjs-tech');
+                        if (videoElement && timeToRestore > 5 && (!payload.duration || timeToRestore < payload.duration * 0.95)) {
+                            console.log(`%c[FRAME] 이어보기 데이터 수신!`, 'color: cyan; font-weight: bold;', `${timeToRestore.toFixed(0)}초부터 재생합니다.`);
+                            
+                            const applySeek = () => {
+                                if (videoElement.currentTime < 3) {
+                                    videoElement.currentTime = timeToRestore;
+                                }
+                            };
+
+                            if (!videoElement.paused) {
+                                applySeek();
+                            } else {
+                                videoElement.addEventListener('play', applySeek, { once: true });
+                            }
+                        }
+                    }
+                    break;
                 }
             }
         });
+
+        function reportProgress() {
+            const videoElement = document.querySelector('video.vjs-tech');
+            if (!videoElement || !currentVideoId) return;
+
+            const isPlaying = document.querySelector('.vjs-play-control')?.classList.contains('vjs-playing');
+            if ((isPlaying || videoElement.paused) && videoElement.duration > 0 && videoElement.currentTime > 5) {
+                const currentTime = videoElement.currentTime;
+                const duration = videoElement.duration;
+
+                if (currentTime > duration - 15) {
+                    clearProgress();
+                    return;
+                }
+                
+                window.top.postMessage({
+                    type: 'LINKKF_UPDATE_TIME',
+                    payload: {
+                        videoId: currentVideoId,
+                        time: currentTime,
+                        duration: duration,
+                        timestamp: Date.now()
+                    }
+                }, 'https://linkkf.net');
+            }
+        }
+
+        function clearProgress() {
+            if (!currentVideoId) return;
+            window.top.postMessage({
+                type: 'LINKKF_CLEAR_TIME',
+                payload: { videoId: currentVideoId }
+            }, 'https://linkkf.net');
+            if (progressSaveInterval) clearInterval(progressSaveInterval);
+        }
 
         function setupVideoFeatures(videoElement) {
             if (isFeatureSetupDone) return;
@@ -105,55 +107,13 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
             const rawUrlKey = urlParams.get('url');
             if (!rawUrlKey) return;
             
-            const normalizedUrlKey = rawUrlKey.split('?')[0].split('#')[0];
-            videoId_base = `linkkf-progress-${normalizedUrlKey}`;
-
-            const loadProgress = () => {
-                if (!videoId_base) return;
-                let validSaves = [];
-                for (let i = 0; i < SAVE_SLOT_COUNT; i++) {
-                    const key = `${videoId_base}_${i}`;
-                    const rawData = localStorage.getItem(key);
-                    if (rawData) {
-                        try {
-                            const data = JSON.parse(rawData);
-                            if (data && typeof data.time === 'number' && isFinite(data.time) && data.time > 5 && data.time < data.duration * 0.95) {
-                                validSaves.push(data);
-                            }
-                        } catch (e) { localStorage.removeItem(key); }
-                    }
-                }
-                if (validSaves.length > 0) {
-                    validSaves.sort((a, b) => b.timestamp - a.timestamp);
-                    const timeToRestore = validSaves[0].time;
-                    console.log(`%c[FRAME] 이어보기 데이터 발견!`, 'color: cyan; font-weight: bold;', `${timeToRestore.toFixed(0)}초부터 재생합니다.`);
-                    videoElement.addEventListener('play', () => {
-                        if (videoElement.currentTime < 3) videoElement.currentTime = timeToRestore;
-                    }, { once: true });
-                }
-            };
-
-            // saveProgress 함수에 실제 로직 할당
-            saveProgress = () => {
-                const isPlaying = document.querySelector('.vjs-play-control')?.classList.contains('vjs-playing');
-                if (videoId_base && (isPlaying || videoElement.paused) && videoElement.duration > 0 && videoElement.currentTime > 5) {
-                    try {
-                        const currentTime = videoElement.currentTime;
-                        const duration = videoElement.duration;
-                        if (currentTime > duration - 15) { clearProgress(); return; }
-                        const dataToSave = { time: currentTime, duration: duration, timestamp: Date.now() };
-                        localStorage.setItem(`${videoId_base}_${currentSlotIndex}`, JSON.stringify(dataToSave));
-                        currentSlotIndex = (currentSlotIndex + 1) % SAVE_SLOT_COUNT;
-                        window.top.postMessage({ type: 'LINKKF_PROGRESS_UPDATE', payload: { time: currentTime, duration: duration, timestamp: Date.now() } }, 'https://linkkf.net');
-                    } catch (e) {}
-                }
-            };
-
-            const clearProgress = () => {
-                if (!videoId_base) return;
-                for (let i = 0; i < SAVE_SLOT_COUNT; i++) localStorage.removeItem(`${videoId_base}_${i}`);
-                if (progressSaveInterval) clearInterval(progressSaveInterval);
-            };
+            currentVideoId = rawUrlKey.split('?')[0].split('#')[0];
+            
+            console.log(`[FRAME] 최상위 창에 '${currentVideoId}'의 재생 시간 요청...`);
+            window.top.postMessage({
+                type: 'LINKKF_REQUEST_TIME',
+                payload: { videoId: currentVideoId }
+            }, 'https://linkkf.net');
 
             window.addEventListener('keydown', (event) => {
                 if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
@@ -170,17 +130,16 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
                 if (executed) { event.preventDefault(); event.stopPropagation(); }
             }, { capture: true });
 
-            loadProgress();
             if (progressSaveInterval) clearInterval(progressSaveInterval);
-            progressSaveInterval = setInterval(saveProgress, 3000);
+            progressSaveInterval = setInterval(reportProgress, 3000);
             
-            videoElement.addEventListener('pause', saveProgress);
+            videoElement.addEventListener('pause', reportProgress);
             videoElement.addEventListener('ended', clearProgress);
-            window.addEventListener('pagehide', saveProgress);
+            window.addEventListener('pagehide', reportProgress);
             
             document.addEventListener('visibilitychange', () => {
                 if (document.visibilityState === 'hidden') {
-                    saveProgress();
+                    reportProgress();
                 }
             });
         }
@@ -206,13 +165,206 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
 
 
     // ===================================================================================
-    //  2. 최상위 창 기능
+    //  2. 최상위 창 기능 (총사령부 역할 + 마이그레이션 실행자)
     // ===================================================================================
     function runTopWindowFeatures() {
-        console.log('[TOP] 스크립트 실행됨.');
+        console.log('[TOP] 스크립트 실행됨 (중앙화 모드).');
         let currentTitleInfo = null;
-        let pendingProgressData = null;
+        const MIGRATION_KEY_PREFIX = 'linkkf-migrated-origin-';
 
+        const ProgressStore = {
+            KEY: 'linkkf-central-progress',
+            _data: null,
+            load() {
+                if (this._data) return;
+                try {
+                    this._data = JSON.parse(localStorage.getItem(this.KEY) || '{}');
+                } catch (e) {
+                    this._data = {};
+                }
+            },
+            save() {
+                localStorage.setItem(this.KEY, JSON.stringify(this._data));
+            },
+            get(videoId) {
+                this.load();
+                return this._data[videoId] || null;
+            },
+            set(videoId, progress) {
+                this.load();
+                this._data[videoId] = progress;
+                this.save();
+            },
+            remove(videoId) {
+                this.load();
+                delete this._data[videoId];
+                this.save();
+            },
+            getAll() {
+                this.load();
+                return this._data;
+            },
+            merge(importedData) {
+                this.load();
+                for (const videoId in importedData) {
+                    if (Object.prototype.hasOwnProperty.call(importedData, videoId)) {
+                        const existing = this._data[videoId];
+                        const incoming = importedData[videoId];
+                        if (!existing || incoming.time > existing.time) {
+                            this._data[videoId] = incoming;
+                        }
+                    }
+                }
+                this.save();
+            }
+        };
+
+        function runMigration(iframe) {
+            let origin;
+            try {
+                origin = new URL(iframe.src).origin;
+            } catch (e) {
+                // Invalid URL, cannot migrate
+                return;
+            }
+            
+            const migrationKey = `${MIGRATION_KEY_PREFIX}${origin}`;
+
+            if (localStorage.getItem(migrationKey)) {
+                return;
+            }
+
+            console.log(`[MIGRATE] '${origin}'에 대한 구버전 데이터 마이그레이션 시작...`);
+
+            iframe.contentWindow.postMessage({ type: 'LINKKF_REQUEST_MIGRATION_DATA' }, '*');
+
+            const migrationListener = (event) => {
+                if (event.source !== iframe.contentWindow || event.data?.type !== 'LINKKF_RESPONSE_MIGRATION_DATA') {
+                    return;
+                }
+                
+                window.removeEventListener('message', migrationListener);
+                
+                const dataToMigrate = event.data.payload;
+                if (dataToMigrate && dataToMigrate.length > 0) {
+                    console.log(`[MIGRATE] '${origin}'으로부터 ${dataToMigrate.length}개의 구버전 데이터를 수신했습니다. 중앙 저장소로 병합합니다.`);
+                    const progressToMerge = {};
+                    dataToMigrate.forEach(item => {
+                        try {
+                            const videoIdMatch = item.key.match(/linkkf-progress-(.*?)_/);
+                            if (videoIdMatch && videoIdMatch[1]) {
+                                const videoId = videoIdMatch[1];
+                                const parsedValue = JSON.parse(item.value);
+                                if (parsedValue && typeof parsedValue.time === 'number') {
+                                    progressToMerge[videoId] = parsedValue;
+                                }
+                            }
+                        } catch(e) {}
+                    });
+                    ProgressStore.merge(progressToMerge);
+                }
+
+                localStorage.setItem(migrationKey, 'true');
+                console.log(`[MIGRATE] '${origin}' 마이그레이션 완료.`);
+            };
+
+            window.addEventListener('message', migrationListener);
+            
+            setTimeout(() => {
+                window.removeEventListener('message', migrationListener);
+            }, 5000);
+        }
+        
+        const iframeObserver = new MutationObserver(() => {
+            const iframe = document.querySelector('iframe[src*="myani.app"], iframe[src*="sub3.top"]');
+            if (iframe) {
+                const handleLoad = () => {
+                    if (iframe.contentWindow) {
+                        runMigration(iframe);
+                    }
+                };
+                if (document.readyState === 'complete') {
+                    handleLoad();
+                } else {
+                    iframe.addEventListener('load', handleLoad, { once: true });
+                }
+            }
+        });
+        iframeObserver.observe(document.body, { childList: true, subtree: true });
+
+        window.addEventListener('message', (event) => {
+            if (event.source === window || !event.data?.type) return;
+            if (!event.data.type.startsWith('LINKKF_')) return;
+
+            const { type, payload } = event.data;
+
+            switch (type) {
+                case 'LINKKF_REQUEST_TIME': {
+                    const { videoId } = payload;
+                    const progress = ProgressStore.get(videoId);
+                    if (event.source.postMessage) {
+                       event.source.postMessage({ type: 'LINKKF_RESPONSE_TIME', payload: progress }, event.origin);
+                    }
+                    break;
+                }
+                case 'LINKKF_UPDATE_TIME': {
+                    const { videoId, time, duration, timestamp } = payload;
+                    ProgressStore.set(videoId, { time, duration, timestamp });
+                    if (currentTitleInfo) {
+                        createHistoryRecord({ time, duration, timestamp });
+                    }
+                    break;
+                }
+                case 'LINKKF_CLEAR_TIME': {
+                    const { videoId } = payload;
+                    ProgressStore.remove(videoId);
+                    break;
+                }
+            }
+        });
+
+        function createHistoryRecord(progressData) {
+            if (currentTitleInfo && progressData) {
+                const episodeUrl = window.location.href;
+                const historyKey = `linkkf-history-${currentTitleInfo.animeId}-${currentTitleInfo.episode}`;
+                const fullTitle = `${currentTitleInfo.series} ${currentTitleInfo.episode}화`.trim();
+                const historyData = {
+                    title: fullTitle,
+                    url: episodeUrl,
+                    time: progressData.time,
+                    duration: progressData.duration,
+                    timestamp: progressData.timestamp,
+                    animeId: currentTitleInfo.animeId
+                };
+                localStorage.setItem(historyKey, JSON.stringify(historyData));
+            }
+        }
+        
+        function setupTitleObserver() {
+            const observer = new MutationObserver((mutations) => {
+                const titleElement = document.querySelector('.player-tips-title.text-row-2 a');
+                if (titleElement) {
+                    const fullText = titleElement.parentElement.textContent;
+                    const episodeMatch = fullText.match(/Watch\s*([\w-]+)/);
+                    const animeIdMatch = titleElement.href.match(/\/ani\/(\d+)\//);
+
+                    if (episodeMatch && animeIdMatch) {
+                        const newSeriesTitle = titleElement.textContent.trim();
+                        const newEpisode = episodeMatch[1];
+                        const newAnimeId = animeIdMatch[1];
+
+                        if (!currentTitleInfo || newEpisode !== currentTitleInfo.episode || newAnimeId !== currentTitleInfo.animeId) {
+                            currentTitleInfo = { series: newSeriesTitle, episode: newEpisode, animeId: newAnimeId };
+                            console.log('%c[TOP] 새 제목 정보 파싱 완료:', 'color: magenta; font-weight: bold;', currentTitleInfo);
+                        }
+                    }
+                } else {
+                    currentTitleInfo = null;
+                }
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+        }
+        
         function runDataCleanup() {
             const playlistAnimeIds = new Set(PlaylistManager.get().map(item => item.animeId));
             const keysToRemove = [];
@@ -245,10 +397,7 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
             }
 
             if (keysToRemove.length > 0) {
-                console.log(`[CLEANUP] ${keysToRemove.length}개의 오래된 시청 기록을 삭제합니다.`);
                 keysToRemove.forEach(key => localStorage.removeItem(key));
-            } else {
-                console.log('[CLEANUP] 삭제할 오래된 데이터가 없습니다.');
             }
         }
 
@@ -259,67 +408,11 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
             const oneDay = 24 * 60 * 60 * 1000;
 
             if (!lastCleanup || (now - parseInt(lastCleanup, 10)) > oneDay) {
-                console.log('[CLEANUP] 오래된 데이터 정리를 시작합니다.');
                 runDataCleanup();
                 localStorage.setItem(CLEANUP_KEY, now.toString());
             }
         }
 
-        function createHistoryRecord() {
-            if (currentTitleInfo && pendingProgressData) {
-                const episodeUrl = window.location.href;
-                const historyKey = `linkkf-history-${currentTitleInfo.animeId}-${currentTitleInfo.episode}`;
-                const fullTitle = `${currentTitleInfo.series} ${currentTitleInfo.episode}화`.trim();
-                const historyData = {
-                    title: fullTitle,
-                    url: episodeUrl,
-                    time: pendingProgressData.time,
-                    duration: pendingProgressData.duration,
-                    timestamp: pendingProgressData.timestamp,
-                    animeId: currentTitleInfo.animeId
-                };
-                localStorage.setItem(historyKey, JSON.stringify(historyData));
-                console.log('%c[TOP] 시청 기록 생성/업데이트 완료:', 'color: lightgreen; font-weight: bold;', historyData);
-                pendingProgressData = null;
-            }
-        }
-
-        function setupTitleObserver() {
-            const observer = new MutationObserver((mutations) => {
-                const titleElement = document.querySelector('.player-tips-title.text-row-2 a');
-                if (titleElement) {
-                    const fullText = titleElement.parentElement.textContent;
-                    const episodeMatch = fullText.match(/Watch\s*([\w-]+)/);
-                    const animeIdMatch = titleElement.href.match(/\/ani\/(\d+)\//);
-
-                    if (episodeMatch && animeIdMatch) {
-                        const newSeriesTitle = titleElement.textContent.trim();
-                        const newEpisode = episodeMatch[1];
-                        const newAnimeId = animeIdMatch[1];
-
-                        if (!currentTitleInfo || newEpisode !== currentTitleInfo.episode || newAnimeId !== currentTitleInfo.animeId) {
-                            currentTitleInfo = { series: newSeriesTitle, episode: newEpisode, animeId: newAnimeId };
-                            console.log('%c[TOP] 새 제목 정보 파싱 완료:', 'color: magenta; font-weight: bold;', currentTitleInfo);
-                            pendingProgressData = null;
-                        }
-                    }
-                } else {
-                    currentTitleInfo = null;
-                }
-            });
-            observer.observe(document.body, { childList: true, subtree: true });
-        }
-
-        function listenForProgress() {
-            window.addEventListener('message', (event) => {
-                if (event.data?.type === 'LINKKF_PROGRESS_UPDATE') {
-                    console.log(`%c[TOP] 프레임으로부터 재생 정보 수신! (수신된 origin: ${event.origin})`, 'color: orange;', event.data.payload);
-                    pendingProgressData = event.data.payload;
-                    createHistoryRecord();
-                }
-            });
-        }
-        
         const HistoryManager = {
             get(limit = 30) {
                 let allHistory = [];
@@ -399,9 +492,7 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
                             if (data && data.timestamp && data.url) {
                                 specificAnimeHistory.push(data);
                             }
-                        } catch (e) {
-                            console.warn(`손상된 시청 기록 데이터 발견, 건너뜁니다: ${key}`);
-                        }
+                        } catch (e) {}
                     }
                 }
 
@@ -421,65 +512,13 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
         };
         
         const BackupManager = {
-            _getRemoteProgressData() {
-                return new Promise((resolve) => {
-                    const iframe = document.querySelector('#magicplayer');
-                    if (!iframe) {
-                        console.log('[Backup] #magicplayer iframe을 찾을 수 없어 progress 백업을 건너뜁니다.');
-                        return resolve([]);
-                    }
+            gatherDataForBackup() {
+                const backupData = {
+                    progress: ProgressStore.getAll(),
+                    playlist: [],
+                    history: []
+                };
 
-                    const listener = (event) => {
-                        if (event.data?.type === 'LINKKF_RESPONSE_PROGRESS_DATA') {
-                            console.log(`[Backup] iframe(${event.origin})으로부터 progress 데이터 수신 완료.`);
-                            window.removeEventListener('message', listener);
-                            clearTimeout(timeout);
-                            resolve(event.data.payload || []);
-                        }
-                    };
-                    window.addEventListener('message', listener);
-
-                    const timeout = setTimeout(() => {
-                        window.removeEventListener('message', listener);
-                        console.warn('[Backup] iframe 응답 시간 초과.');
-                        resolve([]);
-                    }, 2000);
-
-                    // ★★★ 핵심 수정: '저장 후 요청' 메시지를 보냅니다.
-                    console.log('[Backup] #magicplayer iframe에 progress 데이터 저장 후 요청 전송...');
-                    iframe.contentWindow.postMessage({ type: 'LINKKF_SAVE_AND_REQUEST_PROGRESS_DATA' }, '*');
-                });
-            },
-
-            _restoreRemoteProgressData(progressData) {
-                return new Promise((resolve) => {
-                    if (!progressData || progressData.length === 0) return resolve({ success: true, message: 'No progress data to restore.' });
-
-                    const iframe = document.querySelector('#magicplayer');
-                    if (!iframe) return resolve({ success: false, message: '#magicplayer iframe을 찾을 수 없습니다.' });
-
-                    const listener = (event) => {
-                        if (event.data?.type === 'LINKKF_RESTORE_ACK') {
-                            window.removeEventListener('message', listener);
-                            clearTimeout(timeout);
-                            resolve({ success: true, message: 'Restore ACK received.' });
-                        }
-                    };
-                    window.addEventListener('message', listener);
-                    
-                    const timeout = setTimeout(() => {
-                        window.removeEventListener('message', listener);
-                        resolve({ success: false, message: 'Restore ACK timeout.' });
-                    }, 2000);
-
-                    console.log('[Backup] #magicplayer iframe에 progress 데이터 복원 요청 전송...');
-                    iframe.contentWindow.postMessage({ type: 'LINKKF_RESTORE_PROGRESS_DATA', payload: progressData }, '*');
-                });
-            },
-
-            async gatherDataForBackup() {
-                const progressData = await this._getRemoteProgressData();
-                const backupData = { progress: progressData, playlist: [], history: [] };
                 for (let i = 0; i < localStorage.length; i++) {
                     const key = localStorage.key(i);
                     if (key) {
@@ -492,17 +531,14 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
                 }
                 return backupData;
             },
-
-            async exportToFile(buttonElement) {
+            exportToFile(buttonElement) {
                 buttonElement.disabled = true;
-                buttonElement.textContent = '가져오는 중...';
-
-                const data = await this.gatherDataForBackup();
-                
+                buttonElement.textContent = '내보내는 중...';
+                const data = this.gatherDataForBackup();
                 buttonElement.disabled = false;
                 buttonElement.textContent = '파일로 다운로드';
-
-                if (data.progress.length === 0 && data.playlist.length === 0 && data.history.length === 0) {
+                const progressDataSize = Object.keys(data.progress).length;
+                if (progressDataSize === 0 && data.playlist.length === 0 && data.history.length === 0) {
                     return alert('백업할 데이터가 없습니다.');
                 }
                 const jsonString = JSON.stringify(data, null, 2);
@@ -516,63 +552,57 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
             },
-
             async exportToClipboard(buttonElement) {
                 buttonElement.disabled = true;
                 buttonElement.textContent = '복사하는 중...';
-
                 const data = await this.gatherDataForBackup();
-
                 buttonElement.disabled = false;
                 buttonElement.textContent = '클립보드에 복사';
-
-                if (data.progress.length === 0 && data.playlist.length === 0 && data.history.length === 0) {
+                const progressDataSize = Object.keys(data.progress).length;
+                if (progressDataSize === 0 && data.playlist.length === 0 && data.history.length === 0) {
                     return alert('백업할 데이터가 없습니다.');
                 }
                 const jsonString = JSON.stringify(data);
-                
                 try {
                     await navigator.clipboard.writeText(jsonString);
                     alert('백업 데이터가 클립보드에 복사되었습니다.');
                 } catch (err) {
                     alert('클립보드 복사에 실패했습니다. 브라우저 설정을 확인해주세요.');
-                    console.error('클립보드 복사 실패:', err);
                 }
             },
-
             async mergeData(importedData) {
-                const currentPlaylist = PlaylistManager.get();
-                const importedPlaylistItems = importedData.playlist.length > 0 ? JSON.parse(importedData.playlist[0].value || '[]') : [];
-                const currentPlaylistIds = new Set(currentPlaylist.map(item => item.animeId));
-                importedPlaylistItems.forEach(itemToImport => {
-                    if (itemToImport && itemToImport.animeId && !currentPlaylistIds.has(itemToImport.animeId)) {
-                        currentPlaylist.push(itemToImport);
-                    }
-                });
-                localStorage.setItem(PlaylistManager.key, JSON.stringify(currentPlaylist));
-        
-                importedData.history.forEach(itemToImport => {
-                    try {
-                        const currentRaw = localStorage.getItem(itemToImport.key);
-                        const importedParsed = JSON.parse(itemToImport.value);
-                        if (!importedParsed || typeof importedParsed.time !== 'number') return;
-                        if (currentRaw) {
-                            const currentParsed = JSON.parse(currentRaw);
-                            if (importedParsed.time > currentParsed.time) {
+                if(importedData.playlist && Array.isArray(importedData.playlist)) {
+                    const currentPlaylist = PlaylistManager.get();
+                    const importedPlaylistItems = importedData.playlist.length > 0 ? JSON.parse(importedData.playlist[0].value || '[]') : [];
+                    const currentPlaylistIds = new Set(currentPlaylist.map(item => item.animeId));
+                    importedPlaylistItems.forEach(itemToImport => {
+                        if (itemToImport && itemToImport.animeId && !currentPlaylistIds.has(itemToImport.animeId)) {
+                            currentPlaylist.push(itemToImport);
+                        }
+                    });
+                    localStorage.setItem(PlaylistManager.key, JSON.stringify(currentPlaylist));
+                }
+                if(importedData.history && Array.isArray(importedData.history)) {
+                    importedData.history.forEach(itemToImport => {
+                        try {
+                            const currentRaw = localStorage.getItem(itemToImport.key);
+                            const importedParsed = JSON.parse(itemToImport.value);
+                            if (!importedParsed || typeof importedParsed.time !== 'number') return;
+                            if (currentRaw) {
+                                const currentParsed = JSON.parse(currentRaw);
+                                if (importedParsed.time > currentParsed.time) {
+                                    localStorage.setItem(itemToImport.key, itemToImport.value);
+                                }
+                            } else {
                                 localStorage.setItem(itemToImport.key, itemToImport.value);
                             }
-                        } else {
-                            localStorage.setItem(itemToImport.key, itemToImport.value);
-                        }
-                    } catch (e) {}
-                });
-        
-                const result = await this._restoreRemoteProgressData(importedData.progress);
-                if (!result.success) {
-                    alert(`재생 위치 데이터 복원에 실패했습니다. (${result.message}) 영상 재생 페이지에서 다시 시도해주세요.`);
+                        } catch (e) {}
+                    });
+                }
+                if (importedData.progress && typeof importedData.progress === 'object') {
+                    ProgressStore.merge(importedData.progress);
                 }
             },
-            
             async importData(jsonString, buttonElement) {
                 buttonElement.disabled = true;
                 buttonElement.textContent = '불러오는 중...';
@@ -610,14 +640,14 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
             init() { this.injectStyles(); this.createFAB(); }, 
             injectStyles() {
                 const css = `
-                    .kf-fab-container { position: fixed; bottom: 30px; right: 30px; z-index: 99999; } /* <<< 수정됨: z-index를 9998에서 99999로 변경 */
+                    .kf-fab-container { position: fixed; bottom: 30px; right: 30px; z-index: 99999; }
                     .kf-fab-main { position: relative; border-radius: 28px; background-color: #6200ee; color: white; display: flex; justify-content: center; align-items: center; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2); transition: all 0.2s ease-in-out; user-select: none; z-index: 1; padding: 16px; font-size: 16px; }
                     .kf-fab-sub-wrapper { position: absolute; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; visibility: hidden; opacity: 0; transition: all 0.2s ease-in-out; }
                     .kf-fab-container.expand-up .kf-fab-sub-wrapper { bottom: 100%; padding-bottom: 12px; flex-direction: column-reverse; }
                     .kf-fab-container.expand-down .kf-fab-sub-wrapper { top: 100%; padding-top: 12px; }
                     .kf-fab-container.open .kf-fab-sub-wrapper { visibility: visible; opacity: 1; }
                     .kf-fab-sub { background-color: #3700b3; color: white; border-radius: 24px; display: flex; justify-content: center; align-items: center; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2); user-select: none; margin-bottom: 12px; padding: 12px 16px; white-space: nowrap; }
-                    .kf-modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); z-index: 100000; display: flex; justify-content: center; align-items: center; } /* <<< 수정됨: z-index를 9999에서 100000으로 변경 */
+                    .kf-modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); z-index: 100000; display: flex; justify-content: center; align-items: center; }
                     .kf-modal-content { position: absolute; background: #2e2e2e; color: #f1f1f1; border-radius: 8px; width: 90%; max-width: 500px; min-width: 300px; max-height: 80vh; min-height: 200px; display: flex; flex-direction: column; box-shadow: 0 5px 15px rgba(0,0,0,0.5); resize: both; overflow: hidden; } 
                     .kf-modal-header { padding: 12px 16px; border-bottom: 1px solid #444; display: flex; justify-content: space-between; align-items: center; cursor: move; user-select: none; } 
                     .kf-modal-header-actions { display: flex; align-items: center; }
@@ -1006,7 +1036,6 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
         };
         
         scheduleCleanup();
-        listenForProgress();
         setupTitleObserver();
         UIModule.init();
     }
@@ -1014,16 +1043,18 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
     // ===================================================================================
     //  최종 실행 로직
     // ===================================================================================
-    let isVideoFrame = false;
+    let isTopWindow = false;
     try {
-        if (window.self !== window.top) { isVideoFrame = true; }
-    } catch (e) { isVideoFrame = true; }
+        isTopWindow = (window.self === window.top);
+    } catch (e) {
+        isTopWindow = false;
+    }
 
-    if (isVideoFrame) {
-        if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', runVideoFrameFeatures); } 
-        else { runVideoFrameFeatures(); }
-    } else if (window.location.hostname.includes('linkkf')) {
+    if (isTopWindow && window.location.hostname.includes('linkkf')) {
         if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', runTopWindowFeatures); }
         else { runTopWindowFeatures(); }
+    } else if (!isTopWindow) {
+        if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', runVideoFrameFeatures); } 
+        else { runVideoFrameFeatures(); }
     }
 }
