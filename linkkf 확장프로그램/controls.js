@@ -610,14 +610,14 @@ if (typeof window.linkkfExtensionInitialized === 'undefined') {
             init() { this.injectStyles(); this.createFAB(); }, 
             injectStyles() {
                 const css = `
-                    .kf-fab-container { position: fixed; bottom: 30px; right: 30px; z-index: 9998; }
+                    .kf-fab-container { position: fixed; bottom: 30px; right: 30px; z-index: 99999; } /* <<< 수정됨: z-index를 9998에서 99999로 변경 */
                     .kf-fab-main { position: relative; border-radius: 28px; background-color: #6200ee; color: white; display: flex; justify-content: center; align-items: center; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2); transition: all 0.2s ease-in-out; user-select: none; z-index: 1; padding: 16px; font-size: 16px; }
                     .kf-fab-sub-wrapper { position: absolute; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; visibility: hidden; opacity: 0; transition: all 0.2s ease-in-out; }
                     .kf-fab-container.expand-up .kf-fab-sub-wrapper { bottom: 100%; padding-bottom: 12px; flex-direction: column-reverse; }
                     .kf-fab-container.expand-down .kf-fab-sub-wrapper { top: 100%; padding-top: 12px; }
                     .kf-fab-container.open .kf-fab-sub-wrapper { visibility: visible; opacity: 1; }
                     .kf-fab-sub { background-color: #3700b3; color: white; border-radius: 24px; display: flex; justify-content: center; align-items: center; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2); user-select: none; margin-bottom: 12px; padding: 12px 16px; white-space: nowrap; }
-                    .kf-modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); z-index: 9999; display: flex; justify-content: center; align-items: center; } 
+                    .kf-modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); z-index: 100000; display: flex; justify-content: center; align-items: center; } /* <<< 수정됨: z-index를 9999에서 100000으로 변경 */
                     .kf-modal-content { position: absolute; background: #2e2e2e; color: #f1f1f1; border-radius: 8px; width: 90%; max-width: 500px; min-width: 300px; max-height: 80vh; min-height: 200px; display: flex; flex-direction: column; box-shadow: 0 5px 15px rgba(0,0,0,0.5); resize: both; overflow: hidden; } 
                     .kf-modal-header { padding: 12px 16px; border-bottom: 1px solid #444; display: flex; justify-content: space-between; align-items: center; cursor: move; user-select: none; } 
                     .kf-modal-header-actions { display: flex; align-items: center; }
