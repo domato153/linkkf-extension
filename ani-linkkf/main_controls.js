@@ -55,10 +55,31 @@ if (typeof window.combinedConvenienceScriptInitialized === 'undefined') {
                         record(progressData) {
                             try {
                                 const seriesTitleEl = document.querySelector('h1.dh-DkEc, h1.fpUXWby');
-                                const animeIdMatch = (document.querySelector('a.-PelM3I')?.href || window.location.pathname).match(/\/content\/(\d+)\//);
-                                if (!seriesTitleEl || !animeIdMatch) return;
-                                const animeId = animeIdMatch[1]; const fullTitle = seriesTitleEl.textContent.trim();
-                                const episodeMatch = fullTitle.match(/(\d+)\s*화/); const episodeNum = episodeMatch ? episodeMatch[1] : 'N/A';
+                                
+                                // [수정됨] animeId를 window.__NUXT__ 객체에서 우선적으로 가져오도록 변경
+                                let animeId = null;
+                                try {
+                                    if (window.__NUXT__?.pinia?.playStore?.contentInfo?.aniID) {
+                                        animeId = window.__NUXT__.pinia.playStore.contentInfo.aniID;
+                                    }
+                                } catch (e) {
+                                    console.warn('[Anilife 편의기능] NUXT 객체에서 animeId 추출 실패. DOM 방식으로 대체합니다.');
+                                }
+
+                                if (!animeId) {
+                                    const animeIdMatch = (document.querySelector('a.-PelM3I')?.href || window.location.pathname).match(/\/content\/(\d+)\//);
+                                    if (animeIdMatch && animeIdMatch[1]) {
+                                        animeId = animeIdMatch[1];
+                                    } else {
+                                        return; // animeId를 찾지 못하면 기록 중단
+                                    }
+                                }
+                                
+                                if (!seriesTitleEl) return;
+                                
+                                const fullTitle = seriesTitleEl.textContent.trim();
+                                const episodeMatch = fullTitle.match(/(\d+)\s*화/);
+                                const episodeNum = episodeMatch ? episodeMatch[1] : 'N/A';
                                 const seriesTitle = fullTitle.replace(/\s*\d+\s*화.*$/, '').trim();
                                 const historyKey = `${this.KEY_PREFIX}${animeId}-${episodeNum}`;
                                 const historyData = {
@@ -232,24 +253,132 @@ if (typeof window.combinedConvenienceScriptInitialized === 'undefined') {
                     // --- 안정성이 강화된 비디오 기능 설정 함수 (v4.2.0과 동일) ---
                     function setupVideoFeatures(videoElement) {
                         try {
-                            let isVideoSetupInitialized = false;
-                            if (isVideoSetupInitialized || videoElement.dataset.convenienceScriptInitialized) return;
-                            isVideoSetupInitialized = true;
+                            if (videoElement.dataset.convenienceScriptInitialized) return;
                             videoElement.dataset.convenienceScriptInitialized = 'true';
-                            const urlParams = new URLSearchParams(window.location.search); const episodeId = urlParams.get('id');
-                            if (!episodeId) { console.warn('[Anilife 편의기능] episodeId를 찾을 수 없어, 비디오 기능을 중단합니다.'); return; }
-                            let playerState = 'INIT'; let progressSaveInterval = null;
-                            const saveProgress = () => { if (playerState === 'SEEK_PENDING') { return; } try { const currentTime = videoElement.currentTime; const duration = videoElement.duration; if (duration > 0 && isFinite(duration) && currentTime > 5 && currentTime < duration) { const progressData = { time: currentTime, duration: duration, timestamp: Date.now() }; ProgressStore.set(episodeId, progressData); HistoryManager.record(progressData); } } catch (e) { console.error('[Anilife 편의기능] saveProgress 중 오류 발생:', e); } };
-                            const clearProgress = () => { try { ProgressStore.remove(episodeId); if (progressSaveInterval) clearInterval(progressSaveInterval); } catch (e) { console.error('[Anilife 편의기능] clearProgress 중 오류 발생:', e); } };
-                            const attemptAndMonitorSeek = () => { try { const progress = ProgressStore.get(episodeId); if (!progress || progress.time <= 5 || progress.time >= progress.duration * 0.95) { playerState = 'SEEK_APPLIED'; return; } playerState = 'SEEK_PENDING'; console.log(`[Anilife 편의기능] 이어보기 적용 시작... 목표 시간: ${progress.time.toFixed(0)}초`); let monitorInterval = null; let attemptCount = 0; const maxAttempts = 25; const monitorTimeout = setTimeout(() => { clearInterval(monitorInterval); if (playerState !== 'SEEK_APPLIED') { playerState = 'SEEK_FAILED'; console.error('[Anilife 편의기능] 이어보기 적용 시간 초과. 감시를 종료하고 정상 저장을 시작합니다.'); } }, 10000); const stopMonitoring = (status, message, isSuccess) => { if (monitorInterval) clearInterval(monitorInterval); if (monitorTimeout) clearTimeout(monitorTimeout); playerState = status; const logStyle = isSuccess ? 'color: cyan; font-weight: bold;' : 'color: orange;'; console.log(`%c[Anilife 편의기능] ${message} (현재시간: ${videoElement.currentTime.toFixed(0)}초)`, logStyle); videoElement.removeEventListener('play', onUserInteraction); videoElement.removeEventListener('pause', onUserInteraction); videoElement.removeEventListener('seeking', onUserInteraction); }; const onUserInteraction = () => { stopMonitoring('SEEK_APPLIED', '사용자 조작 감지. 이어보기 시도를 중단합니다.', false); }; const monitor = () => { if (videoElement.currentTime >= progress.time - 1) { stopMonitoring('SEEK_APPLIED', '이어보기 적용 확인!', true); return; } if (attemptCount > maxAttempts) { stopMonitoring('SEEK_FAILED', '최대 시도 횟수 초과. 이어보기에 실패했습니다.', false); return; } if (videoElement.currentTime < 1) { attemptCount++; videoElement.currentTime = progress.time; } }; videoElement.currentTime = progress.time; monitorInterval = setInterval(monitor, 200); videoElement.addEventListener('play', onUserInteraction, { once: true }); videoElement.addEventListener('pause', onUserInteraction, { once: true }); videoElement.addEventListener('seeking', onUserInteraction, { once: true }); } catch (e) { console.error('[Anilife 편의기능] attemptAndMonitorSeek 중 오류 발생:', e); playerState = 'SEEK_FAILED'; } };
-                            videoElement.addEventListener('loadedmetadata', attemptAndMonitorSeek, { once: true });
+                            
+                            const urlParams = new URLSearchParams(window.location.search);
+                            const episodeId = urlParams.get('id');
+                            if (!episodeId) {
+                                console.warn('[Anilife 편의기능] episodeId를 찾을 수 없어, 비디오 기능을 중단합니다.');
+                                return;
+                            }
+                            
+                            let playerState = 'INIT';
+                            let progressSaveInterval = null;
+
+                            const saveProgress = () => {
+                                if (playerState === 'SEEK_PENDING') return;
+                                try {
+                                    const currentTime = videoElement.currentTime;
+                                    const duration = videoElement.duration;
+                                    if (duration > 0 && isFinite(duration) && currentTime > 5 && currentTime < duration) {
+                                        const progressData = { time: currentTime, duration: duration, timestamp: Date.now() };
+                                        ProgressStore.set(episodeId, progressData);
+                                        HistoryManager.record(progressData);
+                                    }
+                                } catch (e) {
+                                    console.error('[Anilife 편의기능] saveProgress 중 오류 발생:', e);
+                                }
+                            };
+
+                            const clearProgress = () => {
+                                try {
+                                    ProgressStore.remove(episodeId);
+                                    if (progressSaveInterval) clearInterval(progressSaveInterval);
+                                } catch (e) {
+                                    console.error('[Anilife 편의기능] clearProgress 중 오류 발생:', e);
+                                }
+                            };
+                            
+                            // [수정됨] loadedmetadata 대신 canplay 이벤트를 사용하도록 변경
+                            const attemptAndMonitorSeek = () => {
+                                try {
+                                    const progress = ProgressStore.get(episodeId);
+                                    if (!progress || progress.time <= 5 || progress.time >= progress.duration * 0.95) {
+                                        playerState = 'SEEK_APPLIED';
+                                        return;
+                                    }
+                                    
+                                    playerState = 'SEEK_PENDING';
+                                    console.log(`[Anilife 편의기능] 이어보기 적용 시작... 목표 시간: ${progress.time.toFixed(0)}초`);
+                                    
+                                    let monitorInterval = null;
+                                    let attemptCount = 0;
+                                    const maxAttempts = 25;
+
+                                    const monitorTimeout = setTimeout(() => {
+                                        clearInterval(monitorInterval);
+                                        if (playerState !== 'SEEK_APPLIED') {
+                                            playerState = 'SEEK_FAILED';
+                                            console.error('[Anilife 편의기능] 이어보기 적용 시간 초과. 감시를 종료하고 정상 저장을 시작합니다.');
+                                        }
+                                    }, 10000);
+
+                                    const stopMonitoring = (status, message, isSuccess) => {
+                                        if (monitorInterval) clearInterval(monitorInterval);
+                                        if (monitorTimeout) clearTimeout(monitorTimeout);
+                                        playerState = status;
+                                        const logStyle = isSuccess ? 'color: cyan; font-weight: bold;' : 'color: orange;';
+                                        console.log(`%c[Anilife 편의기능] ${message} (현재시간: ${videoElement.currentTime.toFixed(0)}초)`, logStyle);
+                                        videoElement.removeEventListener('play', onUserInteraction);
+                                        videoElement.removeEventListener('pause', onUserInteraction);
+                                        videoElement.removeEventListener('seeking', onUserInteraction);
+                                    };
+
+                                    const onUserInteraction = () => {
+                                        stopMonitoring('SEEK_APPLIED', '사용자 조작 감지. 이어보기 시도를 중단합니다.', false);
+                                    };
+
+                                    const monitor = () => {
+                                        if (videoElement.currentTime >= progress.time - 1) {
+                                            stopMonitoring('SEEK_APPLIED', '이어보기 적용 확인!', true);
+                                            return;
+                                        }
+                                        if (attemptCount > maxAttempts) {
+                                            stopMonitoring('SEEK_FAILED', '최대 시도 횟수 초과. 이어보기에 실패했습니다.', false);
+                                            return;
+                                        }
+                                        if (videoElement.currentTime < 1 && videoElement.readyState >= 3) { // readyState 체크 추가
+                                            attemptCount++;
+                                            videoElement.currentTime = progress.time;
+                                        }
+                                    };
+
+                                    videoElement.currentTime = progress.time;
+                                    monitorInterval = setInterval(monitor, 200);
+                                    
+                                    videoElement.addEventListener('play', onUserInteraction, { once: true });
+                                    videoElement.addEventListener('pause', onUserInteraction, { once: true });
+                                    videoElement.addEventListener('seeking', onUserInteraction, { once: true });
+
+                                } catch (e) {
+                                    console.error('[Anilife 편의기능] attemptAndMonitorSeek 중 오류 발생:', e);
+                                    playerState = 'SEEK_FAILED';
+                                }
+                            };
+
+                            // [수정됨] loadedmetadata 대신 canplay 이벤트 사용
+                            videoElement.addEventListener('canplay', attemptAndMonitorSeek, { once: true });
+
                             progressSaveInterval = setInterval(saveProgress, 3000);
                             videoElement.addEventListener('ended', clearProgress);
-                            window.addEventListener('pagehide', () => { try { if (playerState === 'SEEK_PENDING') { playerState = 'SEEK_APPLIED'; } saveProgress(); } catch (e) { console.error('[Anilife 편의기능] pagehide 이벤트에서 저장 중 오류 발생:', e); } });
-                            document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveProgress(); });
-                        } catch (e) { console.error('[Anilife 편의기능] setupVideoFeatures 진입 중 심각한 오류 발생:', e); }
+                            window.addEventListener('pagehide', () => {
+                                try {
+                                    if (playerState === 'SEEK_PENDING') {
+                                        playerState = 'SEEK_APPLIED';
+                                    }
+                                    saveProgress();
+                                } catch (e) {
+                                    console.error('[Anilife 편의기능] pagehide 이벤트에서 저장 중 오류 발생:', e);
+                                }
+                            });
+                            document.addEventListener('visibilitychange', () => {
+                                if (document.visibilityState === 'hidden') saveProgress();
+                            });
+                        } catch (e) {
+                            console.error('[Anilife 편의기능] setupVideoFeatures 진입 중 심각한 오류 발생:', e);
+                        }
                     }
-
                     // --- 스크립트 실행 시작 (v4.2.0과 동일) ---
                     scheduleCleanup();
                     UIModule.init();
