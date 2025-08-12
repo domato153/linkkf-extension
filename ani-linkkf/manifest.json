@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Anilife 및 Linkkf 통합 편의기능",
-  "version": "4.2.0",
+  "version": "4.3.0",
   "description": "Anilife와 Linkkf에서 시청 기록, 재생목록, 이어보기, 단축키 및 데이터 백업/복원 기능을 제공합니다.",
   "permissions": [
     "storage"
